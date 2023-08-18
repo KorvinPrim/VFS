@@ -1,0 +1,138 @@
+
+package main
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"sync"
+)
+
+type Data struct {
+	Name    string
+	Size    int64
+	IsDir   bool
+	Content map[string]Data
+}
+
+var listRes map[string]Data
+
+func writeRes(d Data) {
+	for _, fileI := range d.Content {
+		switch fileI.IsDir {
+		case false:
+			if fileI.Size/1024/1024 != 0 {
+				fmt.Println(fileI.Name, " ", fileI.Size/1024/1024, " Mb")
+			} else if fileI.Size/1024 != 0 {
+				fmt.Println(fileI.Name, " ", fileI.Size/1024, " Kb")
+			} else {
+				fmt.Println(fileI.Name, " ", fileI.Size, " ba")
+			}
+		case true:
+			writeRes(fileI)
+		}
+	}
+}
+
+func createFirstFolder(rootPath string) error {
+	content := make(map[string]Data)
+	NewData := Data{rootPath, 0, true, content}
+	listRes[rootPath] = NewData
+	return nil
+}
+
+// ScanPath() открывает и собирает данные в указанной директории
+// после возвращает полученный []fs.FileInfo.
+func OpenPath(root_path string) ([]fs.FileInfo, error) {
+	dir, err := os.Open(path.Join(root_path))
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
+	defer dir.Close()
+
+	// Получаем список файлов и папок
+	files, err := dir.Readdir(-1)
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
+	return files, err
+}
+
+func ScanPath(wg *sync.WaitGroup,
+	rootPath string,
+	mutex *sync.Mutex,
+) ([]fs.FileInfo, error) {
+
+	mutex.Lock()
+	defer func() { wg.Done() }()
+
+	files, err := OpenPath(rootPath)
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
+	if len(listRes) == 0 {
+		err := createFirstFolder(rootPath)
+		if err != nil {
+			fmt.Println(err)
+			return nil, err
+		}
+		wg.Add(1)
+		go ScanPath(wg, rootPath, mutex)
+	} else {
+		fmt.Println(listRes)
+		for _, file := range files {
+			if !file.IsDir() {
+				conForData := make(map[string]Data)
+				NewData := Data{file.Name(), file.Size(), false, conForData}
+				listRes[path.Join(rootPath)].Content[path.Join(rootPath, file.Name())] = NewData
+			} else {
+
+				content := make(map[string]Data)
+
+
+				NewDataF := Data{file.Name(), file.Size(), true, content}
+				listRes[path.Join(rootPath)].Content[path.Join(rootPath, file.Name())] = NewDataF
+
+				wg.Add(1)
+
+				go ScanPath(wg, path.Join(rootPath, file.Name()), mutex)
+
+			}
+		}
+	}
+	defer mutex.Unlock()
+	return files, nil
+}
+
+// StartGathering()  Эта функция начинает процесс
+// сбора данных в указанной директории и координирует
+// гоурутины.
+func StartScan(PathScan string) error {
+	var streams int = 1
+	var wgOneScan sync.WaitGroup
+	var mutex sync.Mutex
+	wgOneScan.Add(streams)
+	listRes = make(map[string]Data)
+	for i := 0; i < streams; i++ {
+		go ScanPath(&wgOneScan, PathScan, &mutex)
+	}
+
+	wgOneScan.Wait()
+
+	for _, fileL := range listRes {
+		switch fileL.IsDir {
+		case false:
+			fmt.Println(fileL.Name, " ", fileL.Size/1024/1024, " Mb")
+		case true:
+			writeRes(fileL)
+		}
+
+	}
+	fmt.Println(listRes)
+	return nil
+
+}
